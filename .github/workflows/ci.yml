@@ -67,7 +67,9 @@ jobs:
 
       - name: Run backend tests
         working-directory: backend
-        run: pytest -v
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -v
 
   frontend-ci:
     name: Frontend Checks
