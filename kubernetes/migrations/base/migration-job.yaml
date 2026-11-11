@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: rideflow-migrations
+  name: ${MIGRATION_JOB_NAME}
   labels:
     app.kubernetes.io/name: rideflow-migrations
 spec:
@@ -16,7 +16,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: rideflow-backend:1.0.0
+          image: ${BACKEND_IMAGE}
           imagePullPolicy: IfNotPresent
           command:
             - alembic

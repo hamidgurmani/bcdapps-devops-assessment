@@ -7,7 +7,6 @@ resources:
   - ../../base
   - configmap.yaml
   - storage.yaml
-  - migration-job.yaml
   - ingress.yaml
   - autoscaling.yaml
 

@@ -1,0 +1,183 @@
+name: Deploy RideFlow Dev
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rideflow-dev-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy-dev:
+    name: Deploy to local kind dev
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, rideflow-kind]
+    timeout-minutes: 30
+
+    env:
+      CLUSTER_NAME: bcdapps-local
+      NAMESPACE: rideflow-dev
+      BACKEND_IMAGE: ghcr.io/hamidgurmani/rideflow-backend:${{ github.sha }}
+      FRONTEND_IMAGE: ghcr.io/hamidgurmani/rideflow-frontend:${{ github.sha }}
+      MIGRATION_JOB_NAME: rideflow-migrations-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify runner and cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for tool in kubectl kind docker jq envsubst; do
+            command -v "$tool" >/dev/null || {
+              echo "Required tool missing: $tool"
+              exit 1
+            }
+          done
+
+          docker info >/dev/null
+
+          kind get clusters | grep -Fxq "$CLUSTER_NAME" || {
+            echo "Expected kind cluster not found: $CLUSTER_NAME"
+            exit 1
+          }
+
+          kubectl config use-context "kind-${CLUSTER_NAME}"
+          kubectl cluster-info
+          kubectl get namespace "$NAMESPACE"
+
+      - name: Verify required Kubernetes Secret keys
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for key in \
+            DATABASE_URL \
+            POSTGRES_DB \
+            POSTGRES_PASSWORD \
+            POSTGRES_USER \
+            REDIS_PASSWORD \
+            REDIS_URL
+          do
+            kubectl get secret rideflow-secrets -n "$NAMESPACE" -o json |
+              jq -e --arg key "$key" '.data[$key] != null' >/dev/null || {
+                echo "Required Secret key is missing: $key"
+                exit 1
+              }
+          done
+
+          echo "All required Secret keys are present."
+
+      - name: Pull and load commit-pinned images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker pull "$BACKEND_IMAGE"
+          docker pull "$FRONTEND_IMAGE"
+
+          kind load docker-image "$BACKEND_IMAGE" --name "$CLUSTER_NAME"
+          kind load docker-image "$FRONTEND_IMAGE" --name "$CLUSTER_NAME"
+
+      - name: Apply dev infrastructure prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl apply -n "$NAMESPACE" \
+            -f kubernetes/overlays/dev/configmap.yaml \
+            -f kubernetes/overlays/dev/storage.yaml \
+            -f kubernetes/base/postgres/service.yaml \
+            -f kubernetes/base/postgres/statefulset.yaml \
+            -f kubernetes/base/redis/service.yaml \
+            -f kubernetes/base/redis/statefulset.yaml
+
+      - name: Wait for storage and data services
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl wait \
+            --for=jsonpath='{.status.phase}'=Bound \
+            pvc/postgres-data pvc/redis-data \
+            -n "$NAMESPACE" \
+            --timeout=180s
+
+          kubectl rollout status statefulset/postgres \
+            -n "$NAMESPACE" --timeout=300s
+
+          kubectl rollout status statefulset/redis \
+            -n "$NAMESPACE" --timeout=300s
+
+      - name: Render and run database migration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl kustomize kubernetes/migrations/overlays/dev |
+            envsubst '${MIGRATION_JOB_NAME} ${BACKEND_IMAGE}' |
+            kubectl apply -f -
+
+          if ! kubectl wait \
+            --for=condition=complete \
+            "job/$MIGRATION_JOB_NAME" \
+            -n "$NAMESPACE" \
+            --timeout=240s
+          then
+            echo "Database migration failed or timed out."
+
+            kubectl describe job "$MIGRATION_JOB_NAME" \
+              -n "$NAMESPACE" || true
+
+            kubectl logs "job/$MIGRATION_JOB_NAME" \
+              -n "$NAMESPACE" \
+              --all-containers=true || true
+
+            exit 1
+          fi
+
+          echo "Database migration completed successfully."
+
+      - name: Render and apply dev application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RENDERED_FILE="$RUNNER_TEMP/rideflow-dev-rendered.yaml"
+
+          kubectl kustomize kubernetes/overlays/dev |
+            sed \
+              -e "s|image: rideflow-backend:1.0.0|image: ${BACKEND_IMAGE}|g" \
+              -e "s|image: rideflow-frontend:1.0.1|image: ${FRONTEND_IMAGE}|g" \
+            > "$RENDERED_FILE"
+
+          grep -Fq "image: $BACKEND_IMAGE" "$RENDERED_FILE"
+          grep -Fq "image: $FRONTEND_IMAGE" "$RENDERED_FILE"
+
+          if grep -Eq 'image: rideflow-(backend|frontend):1\.0\.' "$RENDERED_FILE"; then
+            echo "An old local application image reference remains."
+            exit 1
+          fi
+
+          kubectl apply -f "$RENDERED_FILE"
+
+      - name: Verify application rollouts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl rollout status deployment/rideflow-backend \
+            -n "$NAMESPACE" --timeout=300s
+
+          kubectl rollout status deployment/rideflow-frontend \
+            -n "$NAMESPACE" --timeout=300s
+
+          kubectl get deployments,pods,services \
+            -n "$NAMESPACE" -o wide
+
+          echo "RideFlow dev deployment completed successfully."
