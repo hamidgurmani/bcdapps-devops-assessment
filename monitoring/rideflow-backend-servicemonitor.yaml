@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rideflow-backend
+  namespace: rideflow-dev
+  labels:
+    release: monitoring
+    app.kubernetes.io/part-of: rideflow
+spec:
+  namespaceSelector:
+    matchNames:
+      - rideflow-dev
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rideflow-backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
