@@ -24,7 +24,6 @@ jobs:
       BACKEND_IMAGE: ghcr.io/hamidgurmani/rideflow-backend:${{ github.sha }}
       FRONTEND_IMAGE: ghcr.io/hamidgurmani/rideflow-frontend:${{ github.sha }}
       MIGRATION_JOB_NAME: rideflow-migrations-${{ github.run_id }}-${{ github.run_attempt }}
-      DOCKER_CONFIG: ${{ runner.temp }}/docker-config
 
     steps:
       - name: Checkout repository
@@ -78,6 +77,7 @@ jobs:
       - name: Authenticate to GitHub Container Registry
         shell: bash
         env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
         run: |
@@ -89,6 +89,8 @@ jobs:
 
       - name: Pull and load commit-pinned images
         shell: bash
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: |
           set -euo pipefail
 
@@ -199,4 +201,6 @@ jobs:
       - name: Remove temporary Docker credentials
         if: always()
         shell: bash
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: rm -rf "$DOCKER_CONFIG"
