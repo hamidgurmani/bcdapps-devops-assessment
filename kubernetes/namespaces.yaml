@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rideflow-dev
+  labels:
+    app.kubernetes.io/part-of: rideflow
+    environment: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rideflow-prod
+  labels:
+    app.kubernetes.io/part-of: rideflow
+    environment: prod

@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rideflow-migrations
+  labels:
+    app.kubernetes.io/name: rideflow-migrations
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 180
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rideflow-migrations
+        app.kubernetes.io/part-of: rideflow
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: rideflow-backend:1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - alembic
+            - upgrade
+            - head
+          env:
+            - name: APP_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: rideflow-config
+                  key: APP_NAME
+            - name: APP_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: rideflow-config
+                  key: APP_ENV
+            - name: API_V1_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: rideflow-config
+                  key: API_V1_PREFIX
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: rideflow-config
+                  key: LOG_LEVEL
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rideflow-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rideflow-secrets
+                  key: REDIS_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
