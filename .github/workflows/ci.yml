@@ -63,7 +63,7 @@ jobs:
 
       - name: Run database migrations
         working-directory: backend
-        run: alembic upgrade head
+        run: alembic -c ../alembic.ini upgrade head
 
       - name: Run backend tests
         working-directory: backend
