@@ -1,0 +1,50 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: rideflow-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: rideflow.application
+      rules:
+        - alert: RideFlowBackendDown
+          expr: up{namespace="rideflow-dev",service="rideflow-backend"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: RideFlow backend is unavailable
+            description: Prometheus cannot scrape the RideFlow backend for 2 minutes.
+
+        - alert: RideFlowHighHTTP5xxRate
+          expr: |
+            (
+              sum(rate(http_requests_total{namespace="rideflow-dev",service="rideflow-backend",status=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total{namespace="rideflow-dev",service="rideflow-backend"}[5m]))
+            ) > 0.05
+            and
+            sum(rate(http_requests_total{namespace="rideflow-dev",service="rideflow-backend"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: RideFlow HTTP 5xx error rate is above 5%
+            description: More than 5% of RideFlow backend requests are returning HTTP 5xx responses.
+
+        - alert: RideFlowHighAPIP95Latency
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (le) (
+                rate(http_request_duration_seconds_bucket{namespace="rideflow-dev",service="rideflow-backend"}[5m])
+              )
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: RideFlow API p95 latency is above 500ms
+            description: The 95th percentile backend request latency has exceeded 500ms for 5 minutes.

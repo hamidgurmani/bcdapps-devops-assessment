@@ -1,0 +1,108 @@
+apiVersion: v1
+data:
+  rideflow-overview.json: |
+    {
+      "uid": "rideflow-overview",
+      "title": "RideFlow Application Overview",
+      "tags": ["rideflow", "application", "fastapi"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "HTTP Requests per Second",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{handler!=\"/metrics\"}[5m]))",
+              "legendFormat": "All requests",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "HTTP 5xx Error Rate",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{status=~\"5..\",handler!=\"/metrics\"}[5m]))",
+              "legendFormat": "5xx errors/sec",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "API Latency p95",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{handler!=\"/metrics\"}[5m])))",
+              "legendFormat": "p95 latency",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {"unit": "s"},
+            "overrides": []
+          }
+        },
+        {
+          "id": 4,
+          "title": "Backend Availability",
+          "type": "stat",
+          "gridPos": {"h": 8, "w": 6, "x": 12, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "min(up{namespace=\"rideflow-dev\", service=\"rideflow-backend\"})",
+              "legendFormat": "Backend target",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}
+              ],
+              "min": 0,
+              "max": 1
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 5,
+          "title": "Requests by API Handler",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 6, "x": 18, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "sum by (handler) (rate(http_requests_total{handler!=\"/metrics\"}[5m]))",
+              "legendFormat": "{{handler}}",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    grafana_dashboard: "1"
+  name: rideflow-grafana-dashboard
+  namespace: monitoring
