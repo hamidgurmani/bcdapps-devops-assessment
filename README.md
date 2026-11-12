@@ -31,8 +31,10 @@ flowchart TB
 
     GitHub[GitHub Repository] --> CI[GitHub Actions CI]
     CI --> Registry[GitHub Container Registry]
-    Registry --> Deploy[Manual Dev Deployment Workflow]
-    Deploy --> Kubernetes
+    CI --> DevDeploy[Automatic Dev Deployment after successful CI]
+    DevDeploy --> Dev[RideFlow Dev on kind]
+    Dev --> ProdDeploy[Manual Production Promotion]
+    ProdDeploy --> Prod[RideFlow Production on kind]
 ```
 
 ### Main components
@@ -130,11 +132,11 @@ Use the manifests and overlays in kubernetes/ for the deployment configuration. 
 The application is intended to be accessed through the Ingress entry point. Frontend API requests use the same-origin /api/v1 path, which the Ingress routes to the backend. Accessing the frontend Service directly bypasses this routing.
 
 For the local development environment, the Ingress was tested through a port-forward:
-kubectl port-forward -n ingress-nginx svc/<ingress-controller-service> 8081:80
+kubectl port-forward -n nginx-ingress svc/nginx-ingress-controller 8081:80
 
 
 The exact controller Service name can be checked with:
-kubectl get svc -n ingress-nginx
+kubectl get svc -n nginx-ingress
 
 
 Open http://localhost:8081 in the browser while the port-forward is running.
@@ -146,9 +148,10 @@ The CI workflow includes application validation and container security checks, i
 - Frontend linting, type checking, and build validation.
 - Container image build and vulnerability scanning.
 - Image publishing to GitHub Container Registry.
-The development deployment workflow is manually triggered and uses a self-hosted runner connected to the local kind environment.
+After a successful push-triggered RideFlow CI run on main, the development deployment workflow starts automatically through the workflow_run event. It uses the self-hosted runner connected to the local kind environment and deploys the exact commit SHA built by CI. Manual development deployment is also available through workflow_dispatch.
 
-The deployment workflow authenticates to GHCR, retrieves the required image, deploys the application, and verifies rollout status.
+Production deployment is manually triggered. It requires the full commit SHA of the images deployed in development and verifies that both development images match before promotion. The workflow creates a pre-deployment PostgreSQL backup, runs migrations, deploys the application, and verifies rollout status.
+
 
 Required repository configuration, including any runner setup and GitHub permissions, must be configured before running the workflows. Do not commit registry credentials, application secrets, or private environment files.
 Terraform and AWS infrastructure
