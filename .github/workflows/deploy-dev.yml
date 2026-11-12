@@ -2,6 +2,13 @@ name: Deploy RideFlow Dev
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows:
+      - RideFlow CI
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -14,20 +21,27 @@ concurrency:
 jobs:
   deploy-dev:
     name: Deploy to local kind dev
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: [self-hosted, linux, x64, rideflow-kind]
     timeout-minutes: 30
 
     env:
       CLUSTER_NAME: bcdapps-local
       NAMESPACE: rideflow-dev
-      BACKEND_IMAGE: ghcr.io/hamidgurmani/rideflow-backend:${{ github.sha }}
-      FRONTEND_IMAGE: ghcr.io/hamidgurmani/rideflow-frontend:${{ github.sha }}
+      BACKEND_IMAGE: ghcr.io/hamidgurmani/rideflow-backend:${{ github.event.workflow_run.head_sha || github.sha }}
+      FRONTEND_IMAGE: ghcr.io/hamidgurmani/rideflow-frontend:${{ github.event.workflow_run.head_sha || github.sha }}
       MIGRATION_JOB_NAME: rideflow-migrations-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Verify runner and cluster
         shell: bash
