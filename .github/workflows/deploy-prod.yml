@@ -1,0 +1,261 @@
+name: Deploy RideFlow Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Commit SHA of the images currently deployed in development"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: rideflow-production-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy-prod:
+    name: Deploy to RideFlow Production
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, rideflow-kind]
+    environment:
+      name: production
+    timeout-minutes: 40
+
+    env:
+      CLUSTER_NAME: bcdapps-local
+      DEV_NAMESPACE: rideflow-dev
+      NAMESPACE: rideflow-prod
+      BACKEND_IMAGE: ghcr.io/hamidgurmani/rideflow-backend:${{ inputs.image_tag }}
+      FRONTEND_IMAGE: ghcr.io/hamidgurmani/rideflow-frontend:${{ inputs.image_tag }}
+      MIGRATION_JOB_NAME: rideflow-prod-migrations-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate promotion and runner
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "Production deployment is allowed only from main."
+            exit 1
+          }
+
+          [[ "${{ inputs.image_tag }}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Image tag must be a 40-character commit SHA."
+            exit 1
+          }
+
+          for tool in kubectl kind docker jq envsubst; do
+            command -v "$tool" >/dev/null || {
+              echo "Required tool missing: $tool"
+              exit 1
+            }
+          done
+
+          docker info >/dev/null
+          kind get clusters | grep -Fxq "$CLUSTER_NAME"
+          kubectl config use-context "kind-${CLUSTER_NAME}"
+          kubectl cluster-info
+
+          kubectl get namespace "$DEV_NAMESPACE"
+          kubectl get namespace "$NAMESPACE"
+
+          DEV_BACKEND_IMAGE=$(kubectl get deployment rideflow-backend \
+            -n "$DEV_NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+
+          DEV_FRONTEND_IMAGE=$(kubectl get deployment rideflow-frontend \
+            -n "$DEV_NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+
+          [[ "$DEV_BACKEND_IMAGE" == "$BACKEND_IMAGE" ]] || {
+            echo "Backend image does not match the development deployment."
+            echo "Expected: $BACKEND_IMAGE"
+            echo "Found: $DEV_BACKEND_IMAGE"
+            exit 1
+          }
+
+          [[ "$DEV_FRONTEND_IMAGE" == "$FRONTEND_IMAGE" ]] || {
+            echo "Frontend image does not match the development deployment."
+            echo "Expected: $FRONTEND_IMAGE"
+            echo "Found: $DEV_FRONTEND_IMAGE"
+            exit 1
+          }
+
+          echo "Development image promotion checks passed."
+
+      - name: Verify production Kubernetes Secret
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for key in \
+            DATABASE_URL \
+            POSTGRES_DB \
+            POSTGRES_PASSWORD \
+            POSTGRES_USER \
+            REDIS_PASSWORD \
+            REDIS_URL
+          do
+            kubectl get secret rideflow-secrets -n "$NAMESPACE" -o json |
+              jq -e --arg key "$key" '.data[$key] != null' >/dev/null || {
+                echo "Required production Secret key is missing: $key"
+                exit 1
+              }
+          done
+
+          echo "All production Secret keys are present."
+
+      - name: Authenticate to GitHub Container Registry
+        shell: bash
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$DOCKER_CONFIG"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io \
+            --username "$GHCR_USER" \
+            --password-stdin
+
+      - name: Pull and load promoted images
+        shell: bash
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+        run: |
+          set -euo pipefail
+
+          docker pull "$BACKEND_IMAGE"
+          docker pull "$FRONTEND_IMAGE"
+
+          kind load docker-image "$BACKEND_IMAGE" --name "$CLUSTER_NAME"
+          kind load docker-image "$FRONTEND_IMAGE" --name "$CLUSTER_NAME"
+
+      - name: Apply production prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl apply -n "$NAMESPACE" \
+            -f kubernetes/overlays/prod/configmap.yaml \
+            -f kubernetes/overlays/prod/storage.yaml \
+            -f kubernetes/base/postgres/service.yaml \
+            -f kubernetes/base/postgres/statefulset.yaml \
+            -f kubernetes/base/redis/service.yaml \
+            -f kubernetes/base/redis/statefulset.yaml
+
+      - name: Wait for production storage and data services
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl wait \
+            --for=jsonpath='{.status.phase}'=Bound \
+            pvc/postgres-data pvc/redis-data \
+            -n "$NAMESPACE" --timeout=180s
+
+          kubectl rollout status statefulset/postgres \
+            -n "$NAMESPACE" --timeout=300s
+
+          kubectl rollout status statefulset/redis \
+            -n "$NAMESPACE" --timeout=300s
+
+      - name: Create pre-deployment PostgreSQL backup
+        id: backup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BACKUP_FILE="$RUNNER_TEMP/rideflow-prod-predeploy.dump"
+
+          kubectl exec -n "$NAMESPACE" statefulset/postgres -- \
+            sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
+            > "$BACKUP_FILE"
+
+          test -s "$BACKUP_FILE"
+          echo "Pre-deployment database backup created."
+
+      - name: Run production database migration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl kustomize kubernetes/migrations/overlays/prod |
+            envsubst '${MIGRATION_JOB_NAME} ${BACKEND_IMAGE}' |
+            kubectl apply -f -
+
+          if ! kubectl wait \
+            --for=condition=complete \
+            "job/$MIGRATION_JOB_NAME" \
+            -n "$NAMESPACE" --timeout=240s
+          then
+            echo "Production migration failed or timed out."
+
+            kubectl describe job "$MIGRATION_JOB_NAME" \
+              -n "$NAMESPACE" || true
+
+            kubectl logs "job/$MIGRATION_JOB_NAME" \
+              -n "$NAMESPACE" --all-containers=true || true
+
+            exit 1
+          fi
+
+          echo "Production database migration completed."
+
+      - name: Render and apply production application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RENDERED_FILE="$RUNNER_TEMP/rideflow-prod-rendered.yaml"
+
+          kubectl kustomize kubernetes/overlays/prod |
+            sed -E \
+              -e "s|image: rideflow-backend:[^[:space:]]+|image: ${BACKEND_IMAGE}|g" \
+              -e "s|image: rideflow-frontend:[^[:space:]]+|image: ${FRONTEND_IMAGE}|g" \
+              > "$RENDERED_FILE"
+
+          grep -Fq "image: $BACKEND_IMAGE" "$RENDERED_FILE"
+          grep -Fq "image: $FRONTEND_IMAGE" "$RENDERED_FILE"
+
+          kubectl apply -f "$RENDERED_FILE"
+
+      - name: Verify production rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl rollout status deployment/rideflow-backend \
+            -n "$NAMESPACE" --timeout=300s
+
+          kubectl rollout status deployment/rideflow-frontend \
+            -n "$NAMESPACE" --timeout=300s
+
+          kubectl get deployments,statefulsets,pods,services,ingress,hpa \
+            -n "$NAMESPACE" -o wide
+
+          echo "RideFlow production deployment completed successfully."
+
+      - name: Upload pre-deployment database backup
+        if: always() && steps.backup.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rideflow-prod-predeploy-${{ github.run_id }}
+          path: ${{ runner.temp }}/rideflow-prod-predeploy.dump
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Remove temporary Docker credentials
+        if: always()
+        shell: bash
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+        run: rm -rf "$DOCKER_CONFIG"
