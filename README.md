@@ -54,6 +54,25 @@ flowchart TB
 | Application metrics | Prometheus FastAPI Instrumentator |
 
 
+## Screenshots / Evidence
+
+The following screenshots provide visual evidence of the application, CI/CD workflows, production deployment, monitoring, and Kubernetes environment.
+
+### RideFlow Application
+![RideFlow application](docs/screenshots/rideflow-application.png)
+
+### CI and Development Deployment
+![Successful CI and development deployment](docs/screenshots/ci-and-dev-deployment.png)
+
+### Production Deployment
+![Production deployment](docs/screenshots/production-deployment.png)
+
+### Monitoring Dashboard
+![Grafana monitoring dashboard](docs/screenshots/grafana-dashboard.png)
+
+### Kubernetes Verification
+![Kubernetes resources and deployment verification](docs/screenshots/kubernetes-verification.png)
+
 ## Repository structure
 
 ```text
